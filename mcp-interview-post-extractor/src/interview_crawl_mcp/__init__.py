@@ -1,0 +1,2 @@
+"""Interview crawl MCP server."""
+

@@ -402,9 +402,14 @@ def main() -> None:
         action="store_true",
         help="Disable Streamable HTTP session tracking for clients that reuse closed sessions.",
     )
+    parser.add_argument(
+        "--no-file-log", action="store_true",
+        help="仅输出到终端，不持久化运行日志（供集成测试使用）。",
+    )
     args = parser.parse_args()
-    log_path = install_output_log(PROJECT_ROOT / "logs")
-    print(f"运行日志: {log_path}", flush=True)
+    if not args.no_file_log:
+        log_path = install_output_log(PROJECT_ROOT / "logs")
+        print(f"运行日志: {log_path}", flush=True)
 
     # 仅调整业务日志，避免第三方库的 DEBUG 输出淹没阶段日志或打印请求细节。
     # -m 启动时当前模块名为 __main__，因此同时设置当前 logger 和包级 logger。

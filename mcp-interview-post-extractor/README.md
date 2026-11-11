@@ -72,7 +72,7 @@ http://172.24.224.1:8000/sse
 
 ## 工具
 
-每次启动会将服务的终端输出（标准输出、标准错误、访问日志及异常）同步保存到 MCP 项目内的 `logs/<启动时间>-<进程号>.log`，采用 UTF-8 编码，并在启动时打印日志文件路径。默认仍为 INFO 级别；需要抓取阶段细节时使用 `uv run interview-post-crawl --log-level DEBUG`。日志文件已加入 `.gitignore`。
+每次启动会将服务的终端输出（标准输出、标准错误、访问日志及异常）同步保存到 MCP 项目内的 `logs/<启动时间>-<进程号>.log`，采用 UTF-8 编码，并在启动时打印日志文件路径。默认仍为 INFO 级别；需要抓取阶段细节时使用 `uv run interview-post-crawl --log-level DEBUG`。日志文件已加入 `.gitignore`。使用 `--no-file-log` 可关闭日志持久化；MCP 集成测试已自动传入此参数，仅保留终端输出。
 
 OCR 返回 `FailedOperation.ImageNoText` 时按空文本处理，不计入图片失败；空文本提示使用 DEBUG 级别。其他图片处理异常会在 WARNING 日志中记录处理阶段、异常类型和详细错误（腾讯云 SDK 异常包含错误码、原因及 RequestId），并保留在工具返回的 `image_ocr_errors` 中。
 

@@ -91,6 +91,7 @@ class FetchIntegrationTest(unittest.TestCase):
                 "/mcp",
                 "--log-level",
                 "DEBUG",
+                "--no-file-log",
             ],
             # 继承终端输出，实时显示服务端日志，避免未读取的 PIPE 堵塞。
             env=env,

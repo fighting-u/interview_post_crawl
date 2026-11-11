@@ -3,5 +3,5 @@ mcp-interview-post-extractor/**/__pycache__/
 mcp-interview-post-extractor/**/*.py[cod]
 mcp-interview-post-extractor/**/.browser_data/
 /面经图片/
-/面经/
+# /面经/
 /mcp-interview-post-extractor/logs/

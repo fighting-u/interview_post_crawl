@@ -16,7 +16,6 @@ from interview_crawl_mcp.server import detect_platform_url, parse_data_image, us
 
 
 # 默认使用完整链接；XHS_TEST_URL 环境变量支持长链接、短链接或完整分享文本。
-# XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.37.3&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrfSAStVeSc0NdFKbR4Fqzg8%3D&author_share=1&xhsshare=&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1784000147&share_id=b3c0e3485e9344ecabbaa9f81af3942c&share_channel=copy_link"
 XIAOHONGSHU_URL = "https://xhslink.cn/o/6uumtlHDOAv"
 # XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.54.0&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrWXOu923Hg8gexQ_G2bM8T8%3D&author_share=1&xhsshare=CopyLink&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1794381592&share_id=ceb3277a079a4a7baba1af94a0f27ff8&share_channel=copy_link&track_code=6uumtlHDOAv"
 

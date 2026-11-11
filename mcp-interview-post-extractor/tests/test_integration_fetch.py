@@ -23,10 +23,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-# NOWCODER_URL = "https://www.nowcoder.com/share/jump/1221189251783869391765"
-# XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.37.3&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrfSAStVeSc0NdFKbR4Fqzg8%3D&author_share=1&xhsshare=&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1784000147&share_id=b3c0e3485e9344ecabbaa9f81af3942c&share_channel=copy_link"
-# XIAOHONGSHU_URL = "https://xhslink.cn/o/6uumtlHDOAv"
-XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.54.0&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrWXOu923Hg8gexQ_G2bM8T8%3D&author_share=1&xhsshare=CopyLink&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1794381592&share_id=ceb3277a079a4a7baba1af94a0f27ff8&share_channel=copy_link&track_code=6uumtlHDOAv"
+NOWCODER_URL = "https://www.nowcoder.com/share/jump/1221189251783869391765"
+XIAOHONGSHU_URL = "https://xhslink.cn/o/6uumtlHDOAv"
+# XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.54.0&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrWXOu923Hg8gexQ_G2bM8T8%3D&author_share=1&xhsshare=CopyLink&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1794381592&share_id=ceb3277a079a4a7baba1af94a0f27ff8&share_channel=copy_link&track_code=6uumtlHDOAv"
 
 
 def find_free_port() -> int:

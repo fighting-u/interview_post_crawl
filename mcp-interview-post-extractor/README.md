@@ -111,24 +111,12 @@ uv run maintain-xhs-login --force
 
 ## 集成测试
 
-HTTP MCP 集成测试 `tests.test_integration_fetch` 会自动用 `--log-level DEBUG` 启动服务，显示抓取、图片下载和 OCR 的阶段耗时。正常启动服务默认使用 INFO；手动排查时可运行 `uv run interview-post-crawl --log-level DEBUG`。该参数仅调整本项目业务日志。
-
-单独验证小红书抓取及所有图片地址的可访问性（不启动 MCP，不保存图片，不调用 OCR）：
+分别是刷新登录信息，测试ocr，单测小红书，测试牛客和小红书+mcp；
 
 ```powershell
 cd mcp-interview-post-extractor
-uv run python -m unittest -v tests.test_integration_xhs
-```
-
-该测试复用正式入口的分享文本和短链接解析，再使用现有登录态直接调用 `fetch_xiaohongshu_post_async`，打印链接解析、浏览器启动、首页访问、Cookie 读取、浏览器关闭、签名和详情请求的耗时及接口 HTTP 状态。失败即停止，不重试；短链接会额外请求跳转链。可先设置 `$env:XHS_TEST_URL = '小红书长链接、短链接或完整分享文本'` 替换测试输入；不要与使用同一浏览器登录目录的其他测试或登录脚本同时运行。
-
-详情抓取后，测试会打印图片提取耗时，再逐张用与正式下载相同的 User-Agent、Referer 发起流式 GET，输出 HTTP 状态、Content-Type、Content-Length；收到响应头即关闭连接，不读取完整图片内容、不创建临时文件。图片之间间隔一秒，不重试；该检查验证图片地址可访问性，不验证完整下载和实际图片 OCR。
-
-集成测试会真实访问牛客和小红书，并把返回内容打印到终端。小红书测试前请先确保登录态有效：
-
-```powershell
-cd my_mcp
 uv run maintain-xhs-login
+uv run python -m unittest -v tests.test_integration_ocr 
+uv run python -m unittest -v tests.test_integration_xhs
 uv run python -m unittest -v tests.test_integration_fetch
-uv run python -m unittest -v tests.test_integration_ocr   
 ```

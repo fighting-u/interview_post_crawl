@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,10 +15,7 @@ from bs4 import BeautifulSoup
 NOWCODER_CREATE_TIME_RE = re.compile(r'"createTime"\s*:\s*(\d{10,13})')
 NOWCODER_SUFFIX = "_牛客网_牛客在手,offer不愁"
 NOWCODER_IMAGE_SRC_ATTRS = ("src", "data-src", "data-original", "data-url", "data-actualsrc")
-NOWCODER_IMG_MOMENT_BLOCK_RE = re.compile(r'"imgMoment"\s*:\s*\[(.*?)\]', re.DOTALL)
-NOWCODER_UPLOAD_IMAGE_RE = re.compile(
-    r"https?://uploadfiles\.nowcoder\.com/images/[A-Za-z0-9_./-]+"
-)
+NOWCODER_INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
 NOWCODER_BUILTIN_EMOJI_MARKERS = ("20220815/318889480",)
 NOWCODER_FETCH_ATTEMPTS = 3
 NOWCODER_DETAIL_BODY_MIN_LENGTH = 500
@@ -87,12 +85,6 @@ def parse_create_time(html: str) -> str | None:
     ).isoformat(timespec="seconds")
 
 
-def normalize_js_text(text: str) -> str:
-    """还原脚本中被转义的 URL 字符。"""
-
-    return text.replace("\\u002F", "/").replace("\\/", "/").replace('\\"', '"')
-
-
 def is_builtin_emoji_url(image_url: str) -> bool:
     """判断是否为牛客自带表情包图片。"""
 
@@ -115,6 +107,8 @@ def images_from_container(container: Any, page_url: str) -> list[ImageRef]:
     images: list[ImageRef] = []
     seen: set[str] = set()
     for img in container.select("img"):
+        if img.has_attr("data-card-emoji"):
+            continue
         image_url = image_url_from_tag(img, page_url)
         if not image_url or image_url in seen or is_builtin_emoji_url(image_url):
             continue
@@ -123,49 +117,62 @@ def images_from_container(container: Any, page_url: str) -> list[ImageRef]:
     return images
 
 
-def images_from_script(html: str) -> list[ImageRef]:
-    """从页面脚本里的 imgMoment 数据兜底提取图片。"""
+def images_from_script(soup: BeautifulSoup, page_url: str) -> list[ImageRef]:
+    """只读取初始状态中当前帖子的 imgMoment，不扫描推荐、评论和头像。"""
 
-    normalized_html = normalize_js_text(html)
-    search_areas = NOWCODER_IMG_MOMENT_BLOCK_RE.findall(normalized_html) or [normalized_html]
-
-    for search_area in search_areas:
-        images: list[ImageRef] = []
-        seen: set[str] = set()
-        for match in NOWCODER_UPLOAD_IMAGE_RE.finditer(search_area):
-            image_url = match.group(0)
-            if image_url in seen or is_builtin_emoji_url(image_url):
+    for script in soup.find_all("script"):
+        text = script.string or script.get_text()
+        match = NOWCODER_INITIAL_STATE_RE.search(text)
+        if not match:
+            continue
+        try:
+            state, _ = json.JSONDecoder().raw_decode(text[match.end():])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(state, dict):
+            continue
+        # 分享链接可能不是详情 URL，优先使用页面状态中实际渲染的详情路径。
+        detail_url = state.get("path") or page_url
+        post_id = urlparse(detail_url).path.rstrip("/").split("/")[-1]
+        prefetch = state.get("prefetchData")
+        if not isinstance(prefetch, dict):
+            continue
+        for entry in prefetch.values():
+            if not isinstance(entry, dict) or str(entry.get("contentId")) != post_id:
                 continue
-            seen.add(image_url)
-            images.append(ImageRef(url=image_url))
-        if images:
+            common = entry.get("ssrCommonData")
+            if not isinstance(common, dict):
+                continue
+            post = common.get("contentData")
+            if not isinstance(post, dict):
+                continue
+            attachments = post.get("imgMoment")
+            if not isinstance(attachments, list):
+                return []
+            images: list[ImageRef] = []
+            seen: set[str] = set()
+            for item in attachments:
+                if not isinstance(item, dict):
+                    continue
+                src = item.get("src")
+                if not isinstance(src, str) or not src.strip():
+                    continue
+                image_url = urljoin(page_url, src.strip())
+                if image_url in seen or is_builtin_emoji_url(image_url):
+                    continue
+                seen.add(image_url)
+                images.append(ImageRef(url=image_url, alt=item.get("alt") or None))
             return images
     return []
 
 
-def collect_images(html: str, soup: BeautifulSoup, content_el: Any, page_url: str) -> list[ImageRef]:
-    """汇总正文附近和脚本里的所有图片。"""
-
-    containers: list[Any] = []
-    if content_el:
-        containers.append(content_el)
-        if content_el.parent:
-            containers.extend(content_el.parent.select("div.feed-img, div[class*='feed-img']"))
-        containers.extend(content_el.find_next_siblings())
-    containers.extend(soup.select("div.feed-img, div[class*='feed-img']"))
+def collect_images(soup: BeautifulSoup, content_el: Any, page_url: str) -> list[ImageRef]:
+    """只合并正文内嵌图片与当前帖子的附图，保留表情过滤。"""
 
     images: list[ImageRef] = []
     seen: set[str] = set()
-    for container in containers:
-        if not hasattr(container, "select"):
-            continue
-        for image in images_from_container(container, page_url):
-            if image.url in seen:
-                continue
-            seen.add(image.url)
-            images.append(image)
-
-    for image in images_from_script(html):
+    inline_images = images_from_container(content_el, page_url) if content_el else []
+    for image in [*inline_images, *images_from_script(soup, page_url)]:
         if image.url in seen:
             continue
         seen.add(image.url)
@@ -198,7 +205,7 @@ def parse_nowcoder_post(html: str, url: str) -> FetchedPost:
 
     title = title_el.get_text(strip=True) if title_el else ""
     body = content_el.get_text("\n", strip=True) if content_el else ""
-    images = collect_images(html, soup, content_el, url)
+    images = collect_images(soup, content_el, url)
 
     if not body:
         desc_el = soup.select_one('meta[name="description"]')

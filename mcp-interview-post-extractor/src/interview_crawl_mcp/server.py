@@ -292,35 +292,59 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
         )
         image_ocr_texts: list[str] = []
         image_ocr_errors: list[str] = []
+        download_lock = asyncio.Lock() if post.source == "xiaohongshu" else None
 
-        for index, image in enumerate(post.images, start=1):
-            if post.source == "xiaohongshu" and index > 1:
-                await asyncio.sleep(0.3)
+        async def download_image(index: int, image: ImageRef) -> str:
+            return await asyncio.to_thread(
+                image_to_base64, image, post.url, image_dir / f"{index:03d}"
+            )
+
+        async def process_image(index: int, image: ImageRef) -> tuple[str, str | None]:
+            image_stage = f"图片{index}/{len(post.images)}下载或转码"
             try:
-                stage = f"图片{index}/{len(post.images)}下载或转码"
-                image_started_at = time.monotonic()
-                logger.debug("[MCP抓取] 开始%s", stage)
-                image_base64 = await asyncio.to_thread(
-                    image_to_base64, image, post.url, image_dir / f"{index:03d}"
-                )
-                logger.debug("[MCP抓取] %s完成，耗时=%.1f秒", stage, time.monotonic() - image_started_at)
-                stage = f"图片{index}/{len(post.images)} OCR"
+                if download_lock is not None:
+                    # 只约束小红书下载；释放锁后 OCR 与后续下载可以并发。
+                    async with download_lock:
+                        if index > 1:
+                            await asyncio.sleep(0.3)
+                        image_started_at = time.monotonic()
+                        logger.debug("[MCP抓取] 开始%s", image_stage)
+                        image_base64 = await download_image(index, image)
+                        logger.debug("[MCP抓取] %s完成，耗时=%.1f秒", image_stage, time.monotonic() - image_started_at)
+                else:
+                    image_started_at = time.monotonic()
+                    logger.debug("[MCP抓取] 开始%s", image_stage)
+                    image_base64 = await download_image(index, image)
+                    logger.debug("[MCP抓取] %s完成，耗时=%.1f秒", image_stage, time.monotonic() - image_started_at)
+                image_stage = f"图片{index}/{len(post.images)} OCR"
                 ocr_started_at = time.monotonic()
-                logger.debug("[MCP抓取] 开始%s", stage)
+                logger.debug("[MCP抓取] 开始%s", image_stage)
                 ocr_text = await asyncio.to_thread(ocr_image_base64, image_base64)
-                image_ocr_texts.append(ocr_text)
                 if not ocr_text.strip():
-                    logger.debug("[MCP抓取] %s文字为空，非失败结果", stage)
+                    logger.debug("[MCP抓取] %s文字为空，非失败结果", image_stage)
                 logger.debug(
                     "[MCP抓取] %s完成，文字=%d字符，耗时=%.1f秒",
-                    stage, len(ocr_text), time.monotonic() - ocr_started_at,
+                    image_stage, len(ocr_text), time.monotonic() - ocr_started_at,
                 )
+                return ocr_text, None
             except Exception as exc:
                 logger.warning(
                     "[MCP抓取] %s失败，异常类型=%s，详细错误=%s，继续处理后续图片",
-                    stage, type(exc).__name__, exc,
+                    image_stage, type(exc).__name__, exc,
                 )
-                image_ocr_errors.append(f"image {index} failed: {exc}")
+                return "", f"image {index} failed: {exc}"
+
+        stage = "处理图片下载及OCR"
+        # 每张下载完成后立即进行 OCR；gather 按原图顺序返回，单张错误由任务内部处理。
+        results = await asyncio.gather(*(
+            process_image(index, image)
+            for index, image in enumerate(post.images, start=1)
+        ))
+
+        for ocr_text, error in results:
+            image_ocr_texts.append(ocr_text)
+            if error is not None:
+                image_ocr_errors.append(error)
 
         stage = "格式化返回结果"
         text = format_post_text(post, image_ocr_texts, fetched_at, save_dir)

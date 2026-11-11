@@ -1,5 +1,5 @@
 [project]
-name = "interview-crawl-mcp"
+name = "interview-post-crawl"
 version = "0.1.0"
 description = "MCP server for fetching interview posts from NowCoder and Xiaohongshu."
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-interview-crawl-mcp = "interview_crawl_mcp.server:main"
+interview-post-crawl = "interview_crawl_mcp.server:main"
 maintain-xhs-login = "maintain_xhs_login:main"
 
 [build-system]

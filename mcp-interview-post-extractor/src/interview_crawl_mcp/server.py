@@ -4,10 +4,12 @@ import asyncio
 import argparse
 import base64
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -25,6 +27,9 @@ from .ocr import ocr_image_base64
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 7148
+
+# 服务端阶段日志，不记录分享文本、Cookie、签名或图片内容。
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("interview-crawl", host=DEFAULT_HOST, port=DEFAULT_PORT)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +85,7 @@ def clean_url(url: str) -> str:
 
 
 def resolve_xhs_shortlink(url: str) -> str:
-    """Follow an xhslink.com share URL and return the final Xiaohongshu URL."""
+    """跟随小红书短链接跳转，从跳转链中取出带 token 的笔记地址。"""
 
     response: requests.Response | None = None
     try:
@@ -94,8 +99,19 @@ def resolve_xhs_shortlink(url: str) -> str:
             stream=True,
             timeout=15,
         )
+        # 未携带 Cookie 时，笔记页可能继续跳到登录页；不能只取最终地址。
+        for hop in [*response.history, response]:
+            parsed = urlparse(hop.url)
+            host = (parsed.hostname or "").lower()
+            if host != "xiaohongshu.com" and not host.endswith(".xiaohongshu.com"):
+                continue
+            if not re.fullmatch(r"/(?:discovery/item|explore)/[^/]+/?", parsed.path):
+                continue
+            token = (parse_qs(parsed.query).get("xsec_token") or [""])[0]
+            if token:
+                return hop.url
         response.raise_for_status()
-        return response.url
+        raise FetchError("小红书短链接跳转中未找到带 xsec_token 的笔记地址，请重新复制分享链接。")
     except requests.RequestException as exc:
         raise FetchError(f"Failed to resolve Xiaohongshu short link {url}: {exc}") from exc
     finally:
@@ -217,7 +233,11 @@ def fetch_post(share_text: str) -> FetchedPost:
 async def fetch_post_async(share_text: str) -> FetchedPost:
     """在 MCP async tool 中按链接域名分发到对应平台抓取模块。"""
 
+    started_at = time.monotonic()
+    logger.debug("[抓取] 开始解析分享链接")
     platform, url = await asyncio.to_thread(detect_platform_url, share_text)
+    logger.debug("[抓取] 链接解析完成，平台=%s，耗时=%.1f秒", platform, time.monotonic() - started_at)
+    logger.debug("[抓取] 开始获取帖子，平台=%s", platform)
     if platform == "nowcoder":
         return normalize_post(await asyncio.to_thread(fetch_nowcoder_post, url))
     if platform == "xiaohongshu":
@@ -229,8 +249,15 @@ async def fetch_post_async(share_text: str) -> FetchedPost:
 async def fetch_interview_post(share_text: str) -> list[TextContent]:
     """MCP 工具：抓取牛客或小红书面经分享内容。"""
 
+    started_at = time.monotonic()
+    stage = "抓取帖子"
+    logger.debug("[MCP抓取] 工具开始执行，事件循环=%s", type(asyncio.get_running_loop()).__name__)
     try:
         post = await fetch_post_async(share_text)
+        logger.debug(
+            "[MCP抓取] 帖子抓取完成，正文=%d字符，图片=%d张，累计耗时=%.1f秒",
+            len(post.body or ""), len(post.images), time.monotonic() - started_at,
+        )
         image_ocr_texts: list[str] = []
         image_ocr_errors: list[str] = []
 
@@ -238,15 +265,33 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
             if post.source == "xiaohongshu" and index > 1:
                 await asyncio.sleep(1)
             try:
+                stage = f"图片{index}/{len(post.images)}下载或转码"
+                image_started_at = time.monotonic()
+                logger.debug("[MCP抓取] 开始%s", stage)
                 image_base64 = await asyncio.to_thread(image_to_base64, image, post.url)
-                image_ocr_texts.append(await asyncio.to_thread(ocr_image_base64, image_base64))
+                logger.debug("[MCP抓取] %s完成，耗时=%.1f秒", stage, time.monotonic() - image_started_at)
+                stage = f"图片{index}/{len(post.images)} OCR"
+                ocr_started_at = time.monotonic()
+                logger.debug("[MCP抓取] 开始%s", stage)
+                ocr_text = await asyncio.to_thread(ocr_image_base64, image_base64)
+                image_ocr_texts.append(ocr_text)
+                logger.debug(
+                    "[MCP抓取] %s完成，文字=%d字符，耗时=%.1f秒",
+                    stage, len(ocr_text), time.monotonic() - ocr_started_at,
+                )
             except Exception as exc:
+                logger.warning("[MCP抓取] %s失败，异常类型=%s，继续处理后续图片", stage, type(exc).__name__)
                 image_ocr_errors.append(f"image {index} failed: {exc}")
 
+        stage = "格式化返回结果"
         text = format_post_text(post, image_ocr_texts)
         if image_ocr_errors:
             text = f"{text}\n\nimage_ocr_errors:\n" + "\n".join(image_ocr_errors)
 
+        logger.debug(
+            "[MCP抓取] 准备向MCP框架返回结果，文本=%d字符，图片失败=%d张，总耗时=%.1f秒",
+            len(text), len(image_ocr_errors), time.monotonic() - started_at,
+        )
         return [TextContent(type="text", text=text)]
     except (
         requests.RequestException,
@@ -255,7 +300,17 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
         NowcoderFetchError,
         XhsFetchError,
     ) as exc:
+        logger.error(
+            "[MCP抓取] %s失败，异常类型=%s，准备返回错误结果，耗时=%.1f秒",
+            stage, type(exc).__name__, time.monotonic() - started_at,
+        )
         return [TextContent(type="text", text=f"Fetch failed: {exc}")]
+    except asyncio.CancelledError:
+        logger.warning("[MCP抓取] %s期间被取消，耗时=%.1f秒", stage, time.monotonic() - started_at)
+        raise
+    except Exception as exc:
+        logger.error("[MCP抓取] %s出现未处理异常，异常类型=%s", stage, type(exc).__name__)
+        raise
 
 
 @mcp.tool()
@@ -274,6 +329,12 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"HTTP bind host. Default: {DEFAULT_HOST}")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"HTTP bind port. Default: {DEFAULT_PORT}")
     parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="抓取业务日志级别，默认 INFO；排查阶段耗时时使用 DEBUG。",
+    )
+    parser.add_argument(
         "--transport",
         choices=["streamable-http", "sse"],
         default="streamable-http",
@@ -289,6 +350,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # 仅调整业务日志，避免第三方库的 DEBUG 输出淹没阶段日志或打印请求细节。
+    # -m 启动时当前模块名为 __main__，因此同时设置当前 logger 和包级 logger。
+    logger.setLevel(args.log_level)
+    logging.getLogger("interview_crawl_mcp").setLevel(args.log_level)
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     mcp.settings.streamable_http_path = args.path

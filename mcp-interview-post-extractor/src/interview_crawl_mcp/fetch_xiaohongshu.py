@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+# 小红书抓取阶段日志，仅记录状态和耗时，不记录登录凭据。
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BROWSER_DATA_DIR = PROJECT_ROOT / ".browser_data" / "xhs"
@@ -56,11 +60,7 @@ class NoteUrlInfo:
 def user_agent(chrome_version: str = "137.0.0.0") -> str:
     """返回小红书请求和浏览器读取 Cookie 使用的 UA。"""
 
-    return (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        f"Chrome/{chrome_version} Safari/537.36"
-    )
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) " f"Chrome/{chrome_version} Safari/537.36"
 
 
 def has_required_cookie(cookie: str) -> bool:
@@ -72,11 +72,7 @@ def has_required_cookie(cookie: str) -> bool:
 def cookies_to_string(cookies: list[dict[str, Any]]) -> str:
     """把 Playwright Cookie 列表拼成 requests 可用的 Cookie header。"""
 
-    return "; ".join(
-        f"{cookie['name']}={cookie['value']}"
-        for cookie in cookies
-        if cookie.get("name") and cookie.get("value")
-    )
+    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in cookies if cookie.get("name") and cookie.get("value"))
 
 
 def open_browser_context(user_data_dir: Path, *, headless: bool):
@@ -86,11 +82,7 @@ def open_browser_context(user_data_dir: Path, *, headless: bool):
 
     playwright = sync_playwright().start()
     context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(user_data_dir),
-        channel="msedge",
-        headless=headless,
-        accept_downloads=False,
-        user_agent=user_agent(),
+        user_data_dir=str(user_data_dir), channel="msedge", headless=headless, accept_downloads=False, user_agent=user_agent()
     )
     return playwright, context
 
@@ -102,11 +94,7 @@ async def open_browser_context_async(user_data_dir: Path, *, headless: bool):
 
     playwright = await async_playwright().start()
     context = await playwright.chromium.launch_persistent_context(
-        user_data_dir=str(user_data_dir),
-        channel="msedge",
-        headless=headless,
-        accept_downloads=False,
-        user_agent=user_agent(),
+        user_data_dir=str(user_data_dir), channel="msedge", headless=headless, accept_downloads=False, user_agent=user_agent()
     )
     return playwright, context
 
@@ -134,29 +122,39 @@ def read_cookie_from_browser_state(user_data_dir: Path = DEFAULT_BROWSER_DATA_DI
         playwright.stop()
 
 
-async def read_cookie_from_browser_state_async(
-    user_data_dir: Path = DEFAULT_BROWSER_DATA_DIR,
-) -> str:
+async def read_cookie_from_browser_state_async(user_data_dir: Path = DEFAULT_BROWSER_DATA_DIR) -> str:
     """在 MCP async server 中读取最新 Cookie，避免 sync Playwright 嵌套事件循环。"""
 
     if not user_data_dir.exists() or not any(user_data_dir.iterdir()):
         raise FetchError("小红书登录态不存在，请先运行 `uv run maintain-xhs-login`。")
 
+    started_at = time.monotonic()
+    logger.debug("[小红书] 开始启动Playwright和浏览器")
     try:
         playwright, context = await open_browser_context_async(user_data_dir, headless=True)
     except ImportError as exc:
         raise FetchError("缺少依赖 playwright，请先在 my_mcp 中运行 `uv sync`。") from exc
 
+    logger.debug("[小红书] 浏览器启动完成，耗时=%.1f秒", time.monotonic() - started_at)
     try:
         page = context.pages[0] if context.pages else await context.new_page()
+        stage_started_at = time.monotonic()
+        logger.debug("[小红书] 开始打开首页")
         await page.goto(XHS_INDEX_URL, wait_until="domcontentloaded", timeout=60_000)
+        logger.debug("[小红书] 首页打开完成，耗时=%.1f秒", time.monotonic() - stage_started_at)
+        logger.debug("[小红书] 开始读取Cookie")
         cookie = cookies_to_string(await context.cookies([XHS_INDEX_URL]))
         if not has_required_cookie(cookie):
+            logger.warning("[小红书] Cookie缺少必要字段")
             raise FetchError("小红书登录态已失效，请运行 `uv run maintain-xhs-login` 重新登录。")
+        logger.debug("[小红书] Cookie读取完成，必要字段齐全")
         return cookie
     finally:
+        logger.debug("[小红书] 开始关闭浏览器上下文")
         await context.close()
+        logger.debug("[小红书] 浏览器上下文已关闭，开始停止Playwright")
         await playwright.stop()
+        logger.debug("[小红书] Playwright已停止，登录态读取及清理共耗时=%.1f秒", time.monotonic() - started_at)
 
 
 def parse_note_url(url: str) -> NoteUrlInfo:
@@ -227,12 +225,15 @@ def fetch_note_card(note: NoteUrlInfo, cookie: str) -> dict[str, Any]:
         "xsec_source": note.xsec_source or "pc_share",
         "xsec_token": note.xsec_token,
     }
+    started_at = time.monotonic()
+    logger.debug("[小红书] 开始生成详情请求签名")
+    headers = build_headers(cookie, payload)
+    logger.debug("[小红书] 签名生成完成，耗时=%.1f秒，开始请求详情接口", time.monotonic() - started_at)
+    request_started_at = time.monotonic()
     response = requests.post(
-        f"{XHS_HOST}{XHS_NOTE_DETAIL_URI}",
-        data=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
-        headers=build_headers(cookie, payload),
-        timeout=30,
+        f"{XHS_HOST}{XHS_NOTE_DETAIL_URI}", data=json.dumps(payload, separators=(",", ":"), ensure_ascii=False), headers=headers, timeout=30
     )
+    logger.debug("[小红书] 详情接口返回HTTP %d，耗时=%.1f秒", response.status_code, time.monotonic() - request_started_at)
     if response.status_code in (461, 471):
         raise FetchError("小红书登录态失效或需要验证，请先运行 `uv run maintain-xhs-login`。")
     response.raise_for_status()

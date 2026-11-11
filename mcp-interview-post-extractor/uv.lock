@@ -452,7 +452,7 @@ wheels = [
 ]
 
 [[package]]
-name = "interview-crawl-mcp"
+name = "interview-post-crawl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

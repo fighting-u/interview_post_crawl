@@ -9,6 +9,7 @@ import textwrap
 import time
 import unittest
 from contextlib import closing
+from datetime import timedelta
 from typing import ClassVar
 
 import httpx
@@ -22,8 +23,10 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-NOWCODER_URL = "https://www.nowcoder.com/share/jump/1221189251783869391765"
-XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.37.3&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrfSAStVeSc0NdFKbR4Fqzg8%3D&author_share=1&xhsshare=&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1784000147&share_id=b3c0e3485e9344ecabbaa9f81af3942c&share_channel=copy_link"
+# NOWCODER_URL = "https://www.nowcoder.com/share/jump/1221189251783869391765"
+# XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.37.3&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrfSAStVeSc0NdFKbR4Fqzg8%3D&author_share=1&xhsshare=&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1784000147&share_id=b3c0e3485e9344ecabbaa9f81af3942c&share_channel=copy_link"
+# XIAOHONGSHU_URL = "https://xhslink.cn/o/6uumtlHDOAv"
+XIAOHONGSHU_URL = "https://www.xiaohongshu.com/discovery/item/6a54ea7a000000000f02ade5?app_platform=android&ignoreEngage=true&app_version=9.54.0&share_from_user_hidden=true&xsec_source=app_share&type=normal&xsec_token=CBgjE71f2wiBgInwiOFZpyrWXOu923Hg8gexQ_G2bM8T8%3D&author_share=1&xhsshare=CopyLink&shareRedId=OD5IQTQ8OUo2NzUyOTgwNjk1OTk7PjZP&apptime=1794381592&share_id=ceb3277a079a4a7baba1af94a0f27ff8&share_channel=copy_link&track_code=6uumtlHDOAv"
 
 
 def find_free_port() -> int:
@@ -76,6 +79,7 @@ class FetchIntegrationTest(unittest.TestCase):
         cls.server_process = subprocess.Popen(
             [
                 sys.executable,
+                "-u",
                 "-m",
                 "interview_crawl_mcp.server",
                 "--host",
@@ -86,19 +90,17 @@ class FetchIntegrationTest(unittest.TestCase):
                 "streamable-http",
                 "--path",
                 "/mcp",
+                "--log-level",
+                "DEBUG",
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            # 继承终端输出，实时显示服务端日志，避免未读取的 PIPE 堵塞。
             env=env,
         )
 
         try:
             wait_for_tcp_port(host, port)
         except Exception:
-            cls._stop_server(print_output=True)
+            cls._stop_server()
             raise
 
     @classmethod
@@ -106,7 +108,7 @@ class FetchIntegrationTest(unittest.TestCase):
         cls._stop_server()
 
     @classmethod
-    def _stop_server(cls, print_output: bool = False) -> None:
+    def _stop_server(cls) -> None:
         process = cls.server_process
         cls.server_process = None
         if process is None:
@@ -119,26 +121,41 @@ class FetchIntegrationTest(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
-        if print_output and process.returncode not in (0, None):
-            output = process.stdout.read() if process.stdout is not None else ""
-            if output.strip():
-                print("\n===== MCP server output =====")
-                print(output.strip())
-        if process.stdout is not None:
-            process.stdout.close()
-
     async def call_fetch_tool(self, share_text: str):
-        async with httpx.AsyncClient(trust_env=False) as http_client:
+        """调用真实 MCP 服务，并打印初始化和工具调用阶段的耗时。"""
+
+        started_at = time.monotonic()
+        print("\n[MCP 测试] 开始连接服务并初始化会话", flush=True)
+        # 工具执行期间 SSE 可能没有新数据，不能使用 httpx 默认的 5 秒读取超时。
+        async with httpx.AsyncClient(
+            trust_env=False, timeout=httpx.Timeout(30.0, read=300.0)
+        ) as http_client:
             async with streamable_http_client(
                 self.mcp_url,
                 http_client=http_client,
             ) as (read_stream, write_stream, _):
-                async with ClientSession(read_stream, write_stream) as session:
+                # 同时限制 MCP 请求等待时间，防止传输中断后一直等不到响应。
+                async with ClientSession(
+                    read_stream, write_stream, read_timeout_seconds=timedelta(seconds=300)
+                ) as session:
                     await session.initialize()
-                    result = await session.call_tool(
-                        "fetch_interview_post",
-                        {"share_text": share_text},
+                    print(
+                        f"[MCP 测试] 会话初始化完成，耗时 {time.monotonic() - started_at:.1f} 秒",
+                        flush=True,
                     )
+                    tool_started_at = time.monotonic()
+                    print("[MCP 测试] 开始调用 fetch_interview_post，等待服务端返回", flush=True)
+                    try:
+                        result = await session.call_tool(
+                            "fetch_interview_post",
+                            {"share_text": share_text},
+                        )
+                    finally:
+                        # 失败或手动中断时也打印等待时长，便于区分卡住的阶段。
+                        print(
+                            f"[MCP 测试] 工具调用结束，耗时 {time.monotonic() - tool_started_at:.1f} 秒",
+                            flush=True,
+                        )
                     return result.content
 
     def test_fetch_nowcoder_post_via_http_mcp(self) -> None:

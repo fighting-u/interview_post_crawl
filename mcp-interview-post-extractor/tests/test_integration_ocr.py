@@ -9,7 +9,7 @@ from interview_crawl_mcp.ocr import ocr_image_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # OCR_TEST_IMAGE = PROJECT_ROOT / "面经图片" / "小红书" / "腾讯 ai 应用开发 一面" / "2.webp"
-OCR_TEST_IMAGE = PROJECT_ROOT / "面经图片" / "牛客" / "网易互娱-AI技术面经" / "7.png"
+OCR_TEST_IMAGE = PROJECT_ROOT / "tests" / "test.webp"
 
 
 class OcrIntegrationTest(unittest.TestCase):

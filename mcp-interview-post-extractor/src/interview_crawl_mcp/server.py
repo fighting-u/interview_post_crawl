@@ -27,10 +27,11 @@ from .fetch_xiaohongshu import FetchedPost as XhsPost
 from .fetch_xiaohongshu import fetch_xiaohongshu_post
 from .fetch_xiaohongshu import fetch_xiaohongshu_post_async
 from .ocr import ocr_image_base64
+from .runtime_logs import install_output_log
 
 
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 7148
+DEFAULT_PORT = 8000
 
 # 服务端阶段日志，不记录分享文本、Cookie、签名或图片内容。
 logger = logging.getLogger(__name__)
@@ -308,12 +309,17 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
                 logger.debug("[MCP抓取] 开始%s", stage)
                 ocr_text = await asyncio.to_thread(ocr_image_base64, image_base64)
                 image_ocr_texts.append(ocr_text)
+                if not ocr_text.strip():
+                    logger.debug("[MCP抓取] %s文字为空，非失败结果", stage)
                 logger.debug(
                     "[MCP抓取] %s完成，文字=%d字符，耗时=%.1f秒",
                     stage, len(ocr_text), time.monotonic() - ocr_started_at,
                 )
             except Exception as exc:
-                logger.warning("[MCP抓取] %s失败，异常类型=%s，继续处理后续图片", stage, type(exc).__name__)
+                logger.warning(
+                    "[MCP抓取] %s失败，异常类型=%s，详细错误=%s，继续处理后续图片",
+                    stage, type(exc).__name__, exc,
+                )
                 image_ocr_errors.append(f"image {index} failed: {exc}")
 
         stage = "格式化返回结果"
@@ -373,6 +379,8 @@ def main() -> None:
         help="Disable Streamable HTTP session tracking for clients that reuse closed sessions.",
     )
     args = parser.parse_args()
+    log_path = install_output_log(PROJECT_ROOT / "logs")
+    print(f"运行日志: {log_path}", flush=True)
 
     # 仅调整业务日志，避免第三方库的 DEBUG 输出淹没阶段日志或打印请求细节。
     # -m 启动时当前模块名为 __main__，因此同时设置当前 logger 和包级 logger。

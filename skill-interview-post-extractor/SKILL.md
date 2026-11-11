@@ -7,7 +7,7 @@ description: Retrieve and summarize interview-experience posts through the inter
 
 ## WorkFlow
 
-1. 先调用`interview-post-crawl` MCP server提供的fetch_interview_post工具(即...)来抓取帖子正文内容，并且该工具会返回应写入的文件路径和元数据等信息；
+1. 先调用 `interview-post-crawl` MCP server 提供的 `fetch_interview_post` 工具抓取帖子。返回内容包含帖子发布时间、抓取时间、面经保存目录、正文文字和图片 OCR 结果。保存目录是绝对目录路径，不是完整文件名，文件名看下面的要求你自行提取生成；日期已由 MCP 按抓取时的北京时间确定，直接使用。
   
 
 2. 如果分享链接来自小红书，且抓取失败原因是登录态缺失或过期，提示用户“小红书登录信息已失效，请重新登录”；
@@ -17,8 +17,10 @@ description: Retrieve and summarize interview-experience posts through the inter
 4. 生成 Markdown 面经笔记时，AI 简要回答部分要简洁精炼，无需长篇大论。
 
 5. 调用系统工具写入相应markdown文件，要求：
-   - 使用 Markdown 的一级标题作为 `filename`。
-   - 将完整 Markdown 作为 `content` 传入。
+   - 在 MCP 返回的保存目录下，以 Markdown 一级标题作为文件名，添加 `.md` 后缀；最终相对路径形如 `面经/年/月/日/<标题>.md`。
+   - 标题名看下面的示例说明；
+   - 同名文件已经存在时追加序号，如已有name.md则用name-2.md，避免覆盖。
+   - 多份面经分别命名，保存到同一个返回目录
 
 ## Markdown 格式
 
@@ -31,7 +33,7 @@ description: Retrieve and summarize interview-experience posts through the inter
 url: ...
 发布时间: ...（指的是帖子发布时间，没有就忽略）
 抓取时间: ...
-生成模型：... (爬取工具会告诉你)
+生成模型：...（使用系统工具获取，没有就凭你自己的印象填自己是什么模型）
 
 题目如下：
 ## 项目相关

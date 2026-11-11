@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urljoin
 
@@ -73,7 +73,7 @@ def fetch_html(url: str) -> str:
 
 
 def parse_create_time(html: str) -> str | None:
-    """从页面脚本里解析发帖日期。"""
+    """从页面脚本里解析发帖时间，按北京时间返回。"""
 
     match = NOWCODER_CREATE_TIME_RE.search(html)
     if not match:
@@ -81,8 +81,10 @@ def parse_create_time(html: str) -> str | None:
 
     timestamp = int(match.group(1))
     if timestamp > 10_000_000_000:
-        timestamp //= 1000
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
+        timestamp /= 1000
+    return datetime.fromtimestamp(
+        timestamp, tz=timezone(timedelta(hours=8))
+    ).isoformat(timespec="seconds")
 
 
 def normalize_js_text(text: str) -> str:

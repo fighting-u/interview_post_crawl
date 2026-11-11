@@ -6,10 +6,14 @@ import base64
 import json
 import logging
 import re
+import secrets
+import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from uuid import UUID
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -33,9 +37,14 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP("interview-crawl", host=DEFAULT_HOST, port=DEFAULT_PORT)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-INTERVIEW_DIR = PROJECT_ROOT / "面经"
+OUTPUT_ROOT = PROJECT_ROOT.parent
+INTERVIEW_DIR = OUTPUT_ROOT / "面经"
+IMAGE_DIR = OUTPUT_ROOT / "面经图片"
+BEIJING_TIME = timezone(timedelta(hours=8))
+_uuid_lock = threading.Lock()
+_uuid_timestamp = -1
+_uuid_random = 0
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
-INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 XHS_SHORTLINK_HOSTS = {
     "xhslink.cn",
     "www.xhslink.cn",
@@ -157,66 +166,76 @@ def parse_data_image(data_url: str) -> tuple[str, str] | None:
     return match.group(1).lower(), match.group(2)
 
 
-def image_to_base64(image: ImageRef, referer: str) -> str:
-    """Download one image and return base64 without saving it locally."""
+def new_uuid7() -> str:
+    """生成 UUIDv7；同一进程内同毫秒或时钟回拨时保持递增。"""
+
+    global _uuid_timestamp, _uuid_random
+    with _uuid_lock:
+        timestamp = time.time_ns() // 1_000_000
+        if timestamp > _uuid_timestamp:
+            _uuid_timestamp = timestamp
+            _uuid_random = secrets.randbits(74)
+        else:
+            _uuid_random += 1
+            if _uuid_random >= 1 << 74:
+                _uuid_timestamp += 1
+                _uuid_random = 0
+        value = (_uuid_timestamp << 80) | (7 << 76)
+        value |= (_uuid_random >> 62) << 64
+        value |= (2 << 62) | (_uuid_random & ((1 << 62) - 1))
+        return str(UUID(int=value))
+
+
+def image_to_base64(image: ImageRef, referer: str, save_stem: Path) -> str:
+    """下载图片并保存原始字节，返回供 OCR 使用的 base64。"""
 
     if image.url.startswith("data:image/"):
         parsed = parse_data_image(image.url)
         if not parsed:
             raise FetchError("图片 data URL 不是有效的 base64 内容。")
-        return parsed[1]
+        mime_type, encoded = parsed
+        content = base64.b64decode(encoded)
+    else:
+        with requests.get(
+            image.url,
+            timeout=30,
+            headers={"User-Agent": user_agent(), "Referer": referer},
+        ) as response:
+            response.raise_for_status()
+            content = response.content
+            mime_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    extensions = {
+        "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+        "image/gif": ".gif", "image/avif": ".avif", "image/bmp": ".bmp",
+        "image/svg+xml": ".svg", "image/tiff": ".tiff",
+    }
+    extension = extensions.get(mime_type)
+    if extension is None:
+        suffix = Path(urlparse(image.url).path).suffix.lower()
+        extension = suffix if suffix in extensions.values() else ".img"
+    save_stem.with_suffix(extension).write_bytes(content)
+    return base64.b64encode(content).decode("utf-8")
 
-    response = requests.get(
-        image.url,
-        timeout=30,
-        headers={"User-Agent": user_agent(), "Referer": referer},
-    )
-    response.raise_for_status()
-    return base64.b64encode(response.content).decode("utf-8")
 
-
-def format_post_text(post: FetchedPost, image_ocr_texts: list[str]) -> str:
+def format_post_text(
+    post: FetchedPost, image_ocr_texts: list[str], fetched_at: str, save_dir: Path
+) -> str:
     """把抓取结果格式化成 MCP 返回的文本内容。"""
 
     return "\n".join(
         [
-            "正文：",
+            f"帖子发布时间：{post.posted_at or '未知'}",
+            f"抓取时间：{fetched_at}",
+            f"你应保存文件的地址为：{save_dir}",
+            "",
+            "下面是正文的文字和图片内容，",
+            "正文文字：",
             post.body or "",
             "",
-            "图片ocr结果:",
+            "正文中的图片ocr结果:",
             "\n".join(text for text in image_ocr_texts if text.strip()),
         ]
     )
-
-
-def safe_markdown_filename(filename: str) -> str:
-    """把用户给的文件名清洗成当前目录下可用的 md 文件名。"""
-
-    name = Path(filename).name.strip()
-    name = INVALID_FILENAME_CHARS_RE.sub("_", name).strip(" .")
-    if not name:
-        name = "未命名"
-    if not name.lower().endswith(".md"):
-        name = f"{name}.md"
-    return name
-
-
-def next_markdown_path(filename: str) -> Path:
-    """生成不覆盖已有文件的面经保存路径。"""
-
-    INTERVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    path = INTERVIEW_DIR / safe_markdown_filename(filename)
-    if not path.exists():
-        return path
-
-    stem = path.stem
-    suffix = path.suffix
-    index = 1
-    while True:
-        candidate = INTERVIEW_DIR / f"{stem}-{index}{suffix}"
-        if not candidate.exists():
-            return candidate
-        index += 1
 
 
 def fetch_post(share_text: str) -> FetchedPost:
@@ -250,10 +269,22 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
     """MCP 工具：抓取牛客或小红书面经分享内容。"""
 
     started_at = time.monotonic()
+    fetched_datetime = datetime.now(BEIJING_TIME)
+    fetched_at = fetched_datetime.isoformat(timespec="seconds")
     stage = "抓取帖子"
     logger.debug("[MCP抓取] 工具开始执行，事件循环=%s", type(asyncio.get_running_loop()).__name__)
     try:
         post = await fetch_post_async(share_text)
+        stage = "保存抓取记录"
+        date_path = Path(fetched_datetime.strftime("%Y/%m/%d"))
+        image_dir = IMAGE_DIR / date_path / new_uuid7()
+        save_dir = INTERVIEW_DIR / date_path
+        image_dir.mkdir(parents=True, exist_ok=False)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        (image_dir / "metadata.json").write_text(
+            json.dumps({"url": post.url, "fetched_at": fetched_at}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         logger.debug(
             "[MCP抓取] 帖子抓取完成，正文=%d字符，图片=%d张，累计耗时=%.1f秒",
             len(post.body or ""), len(post.images), time.monotonic() - started_at,
@@ -263,12 +294,14 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
 
         for index, image in enumerate(post.images, start=1):
             if post.source == "xiaohongshu" and index > 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.3)
             try:
                 stage = f"图片{index}/{len(post.images)}下载或转码"
                 image_started_at = time.monotonic()
                 logger.debug("[MCP抓取] 开始%s", stage)
-                image_base64 = await asyncio.to_thread(image_to_base64, image, post.url)
+                image_base64 = await asyncio.to_thread(
+                    image_to_base64, image, post.url, image_dir / f"{index:03d}"
+                )
                 logger.debug("[MCP抓取] %s完成，耗时=%.1f秒", stage, time.monotonic() - image_started_at)
                 stage = f"图片{index}/{len(post.images)} OCR"
                 ocr_started_at = time.monotonic()
@@ -284,7 +317,7 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
                 image_ocr_errors.append(f"image {index} failed: {exc}")
 
         stage = "格式化返回结果"
-        text = format_post_text(post, image_ocr_texts)
+        text = format_post_text(post, image_ocr_texts, fetched_at, save_dir)
         if image_ocr_errors:
             text = f"{text}\n\nimage_ocr_errors:\n" + "\n".join(image_ocr_errors)
 
@@ -311,15 +344,6 @@ async def fetch_interview_post(share_text: str) -> list[TextContent]:
     except Exception as exc:
         logger.error("[MCP抓取] %s出现未处理异常，异常类型=%s", stage, type(exc).__name__)
         raise
-
-
-@mcp.tool()
-def write_interview_markdown(filename: str, content: str) -> list[TextContent]:
-    """MCP 工具：把 Markdown 内容写入项目固定的面经目录。"""
-
-    path = next_markdown_path(filename)
-    path.write_text(content, encoding="utf-8")
-    return [TextContent(type="text", text=f"Markdown saved: {path}")]
 
 
 def main() -> None:

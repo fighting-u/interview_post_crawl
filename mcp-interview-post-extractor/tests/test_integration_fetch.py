@@ -164,7 +164,10 @@ class FetchIntegrationTest(unittest.TestCase):
         print_mcp_result("nowcoder http mcp", result)
 
         text = result[0].text
-        self.assertIn("正文：", text)
+        self.assertIn("帖子发布时间：", text)
+        self.assertIn("抓取时间：", text)
+        self.assertIn("你应保存文件的地址为：", text)
+        self.assertIn("正文文字：", text)
         self.assertIn("图片ocr结果:", text)
         self.assertNotIn("image_paths:", text)
         self.assertNotIn("Fetch failed:", text)
@@ -179,7 +182,10 @@ class FetchIntegrationTest(unittest.TestCase):
         print_mcp_result("xiaohongshu http mcp", result)
 
         text = result[0].text
-        self.assertIn("正文：", text)
+        self.assertIn("帖子发布时间：", text)
+        self.assertIn("抓取时间：", text)
+        self.assertIn("你应保存文件的地址为：", text)
+        self.assertIn("正文文字：", text)
         self.assertIn("图片ocr结果:", text)
         self.assertNotIn("image_paths:", text)
         self.assertNotIn("Fetch failed:", text)

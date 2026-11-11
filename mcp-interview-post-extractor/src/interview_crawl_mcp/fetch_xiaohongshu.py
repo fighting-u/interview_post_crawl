@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +22,10 @@ XHS_HOST = "https://edith.xiaohongshu.com"
 XHS_INDEX_URL = "https://www.xiaohongshu.com"
 XHS_NOTE_DETAIL_URI = "/api/sns/web/v1/feed"
 XHS_IMAGE_URL_KEYS = ("url_default", "url_pre", "url_size_large", "url")
+BEIJING_TIME = timezone(timedelta(hours=8))
+_cached_cookie: str | None = None
+_cookie_read_at: datetime | None = None
+_cookie_refresh_lock = asyncio.Lock()
 
 
 class FetchError(RuntimeError):
@@ -100,7 +105,7 @@ async def open_browser_context_async(user_data_dir: Path, *, headless: bool):
 
 
 def read_cookie_from_browser_state(user_data_dir: Path = DEFAULT_BROWSER_DATA_DIR) -> str:
-    """MCP 请求前从项目 profile 中读取最新 Cookie。"""
+    """从项目 profile 中读取最新 Cookie，不使用内存缓存。"""
 
     if not user_data_dir.exists() or not any(user_data_dir.iterdir()):
         raise FetchError("小红书登录态不存在，请先运行 `uv run maintain-xhs-login`。")
@@ -155,6 +160,28 @@ async def read_cookie_from_browser_state_async(user_data_dir: Path = DEFAULT_BRO
         logger.debug("[小红书] 浏览器上下文已关闭，开始停止Playwright")
         await playwright.stop()
         logger.debug("[小红书] Playwright已停止，登录态读取及清理共耗时=%.1f秒", time.monotonic() - started_at)
+
+
+async def get_daily_cookie() -> str:
+    """北京时间每天首次抓取时读取 Cookie，之后仅复用进程内缓存。"""
+
+    global _cached_cookie, _cookie_read_at
+
+    def is_current(day: date) -> bool:
+        return bool(_cached_cookie and _cookie_read_at and _cookie_read_at.date() == day)
+
+    if is_current(datetime.now(BEIJING_TIME).date()):
+        logger.debug("[小红书] 复用当天Cookie，读取时间=%s", _cookie_read_at.isoformat())
+        return _cached_cookie
+
+    # 并发请求只由一个协程打开浏览器，其余请求等待并复用读取结果。
+    async with _cookie_refresh_lock:
+        if not is_current(datetime.now(BEIJING_TIME).date()):
+            logger.debug("[小红书] 当天Cookie缓存缺失，开始读取")
+            cookie = await read_cookie_from_browser_state_async()
+            _cached_cookie = cookie
+            _cookie_read_at = datetime.now(BEIJING_TIME)
+        return _cached_cookie
 
 
 def parse_note_url(url: str) -> NoteUrlInfo:
@@ -285,35 +312,43 @@ def extract_images(note_card: dict[str, Any]) -> list[ImageRef]:
     return images
 
 
+def parse_publish_time(note_card: dict[str, Any]) -> str | None:
+    """把笔记发布时间（毫秒时间戳）转换为北京时间，缺失或无效时返回 None。"""
+
+    value = note_card.get("time")
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        timestamp = int(value)
+        if timestamp <= 0:
+            return None
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000
+        return datetime.fromtimestamp(
+            timestamp, tz=timezone(timedelta(hours=8))
+        ).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def fetch_xiaohongshu_post(url: str) -> FetchedPost:
-    """抓取小红书笔记正文、标题和图片。"""
+    """同步入口；复用异步抓取流程及每日 Cookie 缓存。"""
 
-    note = parse_note_url(url)
-    cookie = read_cookie_from_browser_state()
-    note_card = fetch_note_card(note, cookie)
-
-    return FetchedPost(
-        source="xiaohongshu",
-        url=note.url,
-        title=note_card.get("title") or None,
-        posted_at=None,
-        body=note_card.get("desc") or None,
-        images=extract_images(note_card),
-    )
+    return asyncio.run(fetch_xiaohongshu_post_async(url))
 
 
 async def fetch_xiaohongshu_post_async(url: str) -> FetchedPost:
     """在 async MCP server 中抓取小红书笔记正文、标题和图片。"""
 
     note = parse_note_url(url)
-    cookie = await read_cookie_from_browser_state_async()
+    cookie = await get_daily_cookie()
     note_card = await asyncio.to_thread(fetch_note_card, note, cookie)
 
     return FetchedPost(
         source="xiaohongshu",
         url=note.url,
         title=note_card.get("title") or None,
-        posted_at=None,
+        posted_at=parse_publish_time(note_card),
         body=note_card.get("desc") or None,
         images=extract_images(note_card),
     )

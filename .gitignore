@@ -2,5 +2,5 @@ mcp-interview-post-extractor/**/.venv/
 mcp-interview-post-extractor/**/__pycache__/
 mcp-interview-post-extractor/**/*.py[cod]
 mcp-interview-post-extractor/**/.browser_data/
-mcp-interview-post-extractor/**/面经图片/
-mcp-interview-post-extractor/**/面经/
+/面经图片/
+/面经/
